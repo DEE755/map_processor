@@ -1,30 +1,50 @@
-import argparse
-import itertools
-
 import cv2
-import networkx as nx
 import numpy as np
-from matplotlib import pyplot as plt
+import argparse
+import matplotlib.pyplot as plt
+import networkx as nx
 from skimage.morphology import skeletonize
-import PyQt5
-
 import matplotlib
 matplotlib.use('Qt5agg')
 import matplotlib.pyplot
-fig=matplotlib.pyplot.figure()
+fig = matplotlib.pyplot.figure()
 fig.canvas.draw()
 fig.canvas.tostring_argb()
 
-def show_image(image):
+
+# Function to calculate Euclidean distance
+def euclidean_distance(p1, p2):
+    return np.sqrt((p1[0] - p2[0]) ** 2 + (p1[1] - p2[1]) ** 2)
 
 
- cv2.imshow("map", image)
+# Function to merge nearby nodes and rebuild the graph
+def simplify_graph(G, distance_threshold):
+    merged_nodes = {}
+    for node in list(G.nodes):
+        merged = False
+        for key in merged_nodes.keys():
+            if euclidean_distance(node, key) < distance_threshold:
+                merged_nodes[key].append(node)
+                merged = True
+                break
+        if not merged:
+            merged_nodes[node] = [node]
 
- cv2.waitKey(0)
+    # Rebuild the graph with merged nodes
+    new_G = nx.Graph()
+    node_mapping = {}
+    for new_node, old_nodes in merged_nodes.items():
+        new_G.add_node(new_node)
+        for old_node in old_nodes:
+            node_mapping[old_node] = new_node
 
- cv2.destroyAllWindows()
+    for edge in G.edges:
+        new_G.add_edge(node_mapping[edge[0]], node_mapping[edge[1]])
+
+    return new_G
 
 
+# Initialize argument parser
 parser = argparse.ArgumentParser(description="path of the map")
 parser.add_argument(
     "file_path",
@@ -33,84 +53,69 @@ parser.add_argument(
     help="absolute path of the map"
 )
 
+parser.add_argument(
+    "--threshold",
+    type=str,
+    nargs="?",
+    help="threshold for simplification"
+)
+
+
+
 args = parser.parse_args()
 
+# Map image path
 if args.file_path is not None:
     map_image_path = args.file_path
-
-else :
+else:
     map_image_path = "Tampa,_FL.png"
 
+# Load and preprocess the map
 map_image = cv2.imread(map_image_path)
-
 gray_map = cv2.cvtColor(map_image, cv2.COLOR_BGR2GRAY)
-
-
-
 blurred_map = cv2.GaussianBlur(gray_map, (5, 5), 0)
+binary_map = cv2.Canny(gray_map, 100, 200)
 
-# Apply adaptive thresholding for better road isolation
-#binary_map = cv2.adaptiveThreshold(blurred_map, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 11, 2)
-
-binary_map=cv2.Canny(gray_map,100,200)
-
-#show_image(binary_map)
-# Skeletonize the binary image
+# Skeletonize the binary map
 skeleton = skeletonize(binary_map // 255).astype(np.uint8) * 255
 
-#show_image(skeleton)
-
+# Detect lines using Hough Line Transform
 lines = cv2.HoughLinesP(skeleton, rho=1, theta=np.pi/180, threshold=50, minLineLength=30, maxLineGap=10)
 
-# Visualize detected lines
-line_image = cv2.cvtColor(skeleton, cv2.COLOR_GRAY2BGR)
+# Create a graph
+G = nx.Graph()
+
+# Add nodes and edges from detected lines
 if lines is not None:
     for line in lines:
         x1, y1, x2, y2 = line[0]
-        cv2.line(line_image, (x1, y1), (x2, y2), (0, 255, 0), 2)  # Green lines for visualization
 
+        # Add nodes (start and end points of the line)
+        G.add_node((x1, y1))
+        G.add_node((x2, y2))
+
+        # Add edge between the start and end points
+        G.add_edge((x1, y1), (x2, y2))
+
+# Simplify the graph by merging nearby nodes
+if args.threshold is not None:
+    distance_threshold = int(args.threshold)
+else:
+    distance_threshold = 50
+# Increase this value to reduce the number of nodes
+new_G = simplify_graph(G, distance_threshold)
+new_G.remove_edges_from(nx.selfloop_edges(new_G))
+
+
+# Visualize the simplified graph
 plt.figure(figsize=(12, 8))
-plt.title("Hough Line Transform - Detected Lines")
-plt.imshow(line_image)
+plt.imshow(cv2.cvtColor(map_image, cv2.COLOR_BGR2RGB))
+pos = {node: node for node in new_G.nodes}
+nx.draw(new_G, pos, node_size=10, edge_color="blue", node_color="red", with_labels=False)
+plt.title(f"Road Graph (Simplified, Threshold={distance_threshold})")
 plt.axis("off")
-#plt.show()
+plt.show()
 
-# Calculate intersections of the detected lines
-
-
-
-
-
-
-#kernel = np.array([[1, 1, 1], [1, 10, 1], [1, 1, 1]], dtype=np.uint8)
-#filtered = cv2.filter2D(skeleton, -1, kernel)
-#intersections = np.where(filtered > 255)
-
-# Extract nodes as intersections
-#nodes = list(zip(intersections[1], intersections[0]))
-
-
-
-#G = nx.Graph()
-#for i, (x, y) in enumerate(nodes):
-    #G.add_node(i, pos=(x, y))
-
-
-
-
-
-#plt.figure(figsize=(10, 10))
-#plt.imshow(cv2.cvtColor(map_image, cv2.COLOR_BGR2RGB))
-#plt.axis("off")
-
-#pos = nx.get_node_attributes(G, 'pos')
-#nx.draw(G, pos, with_labels=False, node_size=25, edge_color="blue", node_color="red", alpha=0.6)
-#plt.title("Graph of Road Intersections")
-
-#print(f"Number of nodes: {len(nodes)}")
-#print(f"Number of edges: {len(G_intersections.edges)}")
-
-#plt.show()
-
-
-
+# Output the number of nodes and edges
+print(f"Number of nodes: {len(new_G.nodes)}")
+print(f"Number of edges: {len(new_G.edges)}")
